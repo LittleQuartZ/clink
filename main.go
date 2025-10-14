@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -16,9 +19,13 @@ type model struct {
 	vp       viewport.Model
 	input    textarea.Model
 	messages []string
+
+	conn   net.Conn
+	server string
+	err    error
 }
 
-func initialModel() model {
+func initialModel(serverAddr string) model {
 	vp := viewport.New(80, 20)
 	vp.Style = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1).BorderForeground(lipgloss.Color("#bada55"))
 
@@ -35,11 +42,49 @@ func initialModel() model {
 		vp:       vp,
 		input:    ta,
 		messages: []string{},
+		server:   serverAddr,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return textarea.Blink
+	return tea.Batch(textarea.Blink, connectCmd(m.server))
+}
+
+func connectCmd(addr string) tea.Cmd {
+	return func() tea.Msg {
+		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err != nil {
+			return netMsg(fmt.Sprintf("[error] connect: %v", err))
+		}
+
+		go func(conn net.Conn, ch chan<- tea.Msg) {
+			scanner := bufio.NewScanner(conn)
+			scanner.Buffer(make([]byte, 0, 1024), 64*1024)
+			for scanner.Scan() {
+				ch <- netMsg(scanner.Text())
+			}
+			if err := scanner.Err(); err != nil {
+				ch <- netMsg(fmt.Sprintf("[error] read: %v", err))
+			}
+			ch <- netMsg("[disconnected]")
+		}(conn, make(chan tea.Msg, 1))
+
+		return netMsg("[connected]")
+	}
+}
+
+func sendCmd(conn net.Conn, text string) tea.Cmd {
+	return func() tea.Msg {
+		if conn == nil {
+			return netMsg("[error] not connected")
+		}
+
+		_, err := fmt.Fprintln(conn, text)
+		if err != nil {
+			return netMsg(fmt.Sprintf("[error] send: %v", err))
+		}
+		return nil
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -49,16 +94,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
+			if m.conn != nil {
+				_ = m.conn.Close()
+			}
 			return m, tea.Quit
 		case tea.KeyEnter:
 			text := m.input.Value()
 			if text != "" {
-				m.messages = append(m.messages, fmt.Sprintf("You: %s", text))
-				m.messages = append(m.messages, fmt.Sprintf("Bot: %s", text))
+				cmds = append(cmds, sendCmd(m.conn, text))
 				m.input.SetValue("")
 				m.refreshViewport()
 			}
-			return m, nil
+			return m, tea.Batch(cmds...)
 		}
 	case tea.WindowSizeMsg:
 		// Allocate space: viewport above, input below
@@ -66,12 +113,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp.Height = msg.Height - 4
 		m.input.SetWidth(msg.Width - 2)
 		m.refreshViewport()
+	case netMsg:
+		s := string(msg)
+
+		if s == "[connected]" {
+			m.messages = append(m.messages, s)
+			m.refreshViewport()
+			return m, nil
+		}
+
+		m.messages = append(m.messages, s)
+		m.refreshViewport()
+
+		return m, nil
 	}
 
 	// Let textarea handle remaining keys
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	cmds = append(cmds, cmd)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -92,15 +154,25 @@ func (m *model) refreshViewport() {
 }
 
 func (m model) View() string {
+	header := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Bold(true).Render(m.server)
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
+		header,
 		m.vp.View(),
 		m.input.View(),
 	)
 }
 
 func main() {
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	go func() {
+		if err := startTCPServer("localhost:9000"); err != nil {
+			fmt.Println("Server error:", err)
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	p := tea.NewProgram(initialModel("127.0.0.1:9000"), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("Error:", err)
 	}
