@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -14,6 +16,9 @@ import (
 )
 
 type netMsg string
+type connectedMsg struct{ conn net.Conn }
+type disconnectedMsg struct{}
+type errorMsg struct{ err error }
 
 type model struct {
 	vp       viewport.Model
@@ -31,11 +36,11 @@ func initialModel(serverAddr string) model {
 
 	ta := textarea.New()
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.Placeholder = "Type message and press Enter…"
+	ta.Placeholder = "Type message and press Enter..."
 	ta.Focus()
 	ta.Prompt = "┃ "
 	ta.CharLimit = 0
-	ta.SetHeight(3)
+	ta.SetHeight(2)
 	ta.ShowLineNumbers = false
 
 	return model{
@@ -57,19 +62,26 @@ func connectCmd(addr string) tea.Cmd {
 			return netMsg(fmt.Sprintf("[error] connect: %v", err))
 		}
 
-		go func(conn net.Conn, ch chan<- tea.Msg) {
-			scanner := bufio.NewScanner(conn)
-			scanner.Buffer(make([]byte, 0, 1024), 64*1024)
-			for scanner.Scan() {
-				ch <- netMsg(scanner.Text())
-			}
-			if err := scanner.Err(); err != nil {
-				ch <- netMsg(fmt.Sprintf("[error] read: %v", err))
-			}
-			ch <- netMsg("[disconnected]")
-		}(conn, make(chan tea.Msg, 1))
+		return connectedMsg{conn: conn}
+	}
+}
 
-		return netMsg("[connected]")
+func readLineCmd(conn net.Conn) tea.Cmd {
+	return func() tea.Msg {
+		if conn == nil {
+			return disconnectedMsg{}
+		}
+
+		reader := bufio.NewReader(conn)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return disconnectedMsg{}
+			}
+			return netMsg(fmt.Sprintf("[error] read: %v", err))
+		}
+
+		return netMsg(strings.TrimRight(line, "\r\n"))
 	}
 }
 
@@ -91,6 +103,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+
+	case connectedMsg:
+		m.conn = msg.conn
+		m.messages = append(m.messages, "[connected]")
+		m.refreshViewport()
+
+		return m, readLineCmd(m.conn)
+
+	case disconnectedMsg:
+		m.messages = append(m.messages, "[disconnected]")
+		if m.conn != nil {
+			_ = m.conn.Close()
+			m.conn = nil
+		}
+		m.refreshViewport()
+		return m, nil
+
+	case netMsg:
+		m.messages = append(m.messages, string(msg))
+		m.refreshViewport()
+
+		if m.conn != nil && !strings.HasPrefix(string(msg), "[error] read") {
+			cmds = append(cmds, readLineCmd(m.conn))
+		}
+
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
@@ -107,25 +144,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
+
 	case tea.WindowSizeMsg:
 		// Allocate space: viewport above, input below
 		m.vp.Width = msg.Width
 		m.vp.Height = msg.Height - 4
 		m.input.SetWidth(msg.Width - 2)
 		m.refreshViewport()
-	case netMsg:
-		s := string(msg)
-
-		if s == "[connected]" {
-			m.messages = append(m.messages, s)
-			m.refreshViewport()
-			return m, nil
-		}
-
-		m.messages = append(m.messages, s)
-		m.refreshViewport()
-
-		return m, nil
 	}
 
 	// Let textarea handle remaining keys
