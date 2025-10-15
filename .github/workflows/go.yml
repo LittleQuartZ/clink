@@ -1,12 +1,22 @@
-name: build-binaries
+name: release-binaries-from-bookmark
+
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches:
+      - "releases/v*"
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: clink
+  ENTRY_PATH: ./main.go
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     strategy:
       matrix:
         goos: [linux, darwin, windows]
@@ -18,36 +28,61 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Go
+      - name: Parse version from bookmark
+        id: ver
+        run: |
+          REF="${GITHUB_REF_NAME}"     # e.g., releases/v1.2.3
+          case "$REF" in
+            releases/v*) ;; 
+            *) echo "Unexpected ref: $REF" >&2; exit 1;;
+          esac
+          V="${REF#releases/}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Version: $V"
+
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.22.x"
           cache: true
 
-      - name: Build
+      - name: Build and package
         run: |
-          APP_NAME=myapp
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          mkdir -p dist
+
           EXT=""
           if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
-          OUT="dist/${APP_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}${EXT}"
-          mkdir -p dist
+
+          BIN="dist/${APP_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}${EXT}"
+          ARCHIVE_BASE="${APP_NAME}_${V}_${{ matrix.goos }}_${{ matrix.goarch }}"
           export CGO_ENABLED=0
-          if [ "${{ matrix.goarm }}" != "" ]; then export GOARM=${{ matrix.goarm }}; fi
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags="-s -w" -o "$OUT" ./cmd/myapp
-          # tar/zip per OS
+          if [ "${{ matrix.goarm }}" != "" ]; then
+            export GOARM=${{ matrix.goarm }}
+            ARCHIVE_BASE="${APP_NAME}_${V}_${{ matrix.goos }}_armv${{ matrix.goarm }}"
+          fi
+
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags="-s -w -X 'main.version=${V}'" \
+            -o "$BIN" "$ENTRY_PATH"
+
+          # package into OS-appropriate archive
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip -j "${OUT%.exe}.zip" "$OUT"
-            rm -f "$OUT"
+            zip -j "dist/${ARCHIVE_BASE}.zip" "$BIN"
+            rm -f "$BIN"
           else
-            tar -C dist -czf "${OUT##dist/}.tar.gz" "$(basename "$OUT")"
-            rm -f "$OUT"
+            tar -C dist -czf "dist/${ARCHIVE_BASE}.tar.gz" "$(basename "$BIN")"
+            rm -f "$BIN"
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries
+          name: binaries-${{ steps.ver.outputs.version }}
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -55,15 +90,19 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: binaries
+          name: binaries-${{ needs.build.outputs.version }}
           path: dist
-      - name: Create GitHub Release
+
+      - name: Create GitHub Release with binaries
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.build.outputs.version }}
+          name: ${{ needs.build.outputs.version }}
+          draft: false
+          prerelease: false
           files: dist/*
+          generate_release_notes: true
