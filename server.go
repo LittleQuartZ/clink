@@ -116,6 +116,7 @@ func handleConn(h *Hub, c net.Conn) {
 	fmt.Fprintf(c, "Welcome %s (%s)\n", username, id)
 	fmt.Fprintln(c, "Use /name <username> to set your username. Allowed: [A-Za-z0-9_.-] (spaces become _)")
 	// Announce join to others, exclude self
+	log.Printf("join: user=%s id=%s remote=%s", username, id, c.RemoteAddr())
 	h.msgCh <- broadcast{text: fmt.Sprintf("[join] %s (%s)", username, id), exclude: c}
 
 	scanner := bufio.NewScanner(c)
@@ -146,6 +147,7 @@ func handleConn(h *Hub, c net.Conn) {
 			old := username
 			username = newName
 			// Broadcast rename to everyone (including the renamer)
+			log.Printf("rename: user=%s id=%s remote=%s", username, id, c.RemoteAddr())
 			h.msgCh <- broadcast{text: fmt.Sprintf("[rename] %s (%s) -> %s", old, id, username)}
 			continue
 		}
@@ -158,6 +160,7 @@ func handleConn(h *Hub, c net.Conn) {
 	}
 
 	// Single, consistent leave announcement
+	log.Printf("leave: user=%s id=%s remote=%s", username, id, c.RemoteAddr())
 	h.msgCh <- broadcast{text: fmt.Sprintf("[leave] %s (%s)", username, id)}
 }
 

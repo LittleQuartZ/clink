@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"regexp"
+
 	"strings"
 	"time"
 
@@ -25,7 +26,7 @@ func colorizeLine(s string) string {
 		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + id)).Bold(true)
 		name := nameStyle.Render(m[1])
 		rest := strings.TrimSpace(m[3])
-		return fmt.Sprintf("%s (%s): %s", name, id, rest)
+		return fmt.Sprintf("%s: %s", name, rest)
 	}
 
 	reJoinLeave := regexp.MustCompile(`^\[(join|leave)\] (.+?) \(([0-9a-fA-F]{6})\)$`)
@@ -33,7 +34,7 @@ func colorizeLine(s string) string {
 		id := strings.ToLower(m[3])
 		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + id)).Bold(true)
 		uname := nameStyle.Render(m[2])
-		return fmt.Sprintf("[%s] %s (%s)", m[1], uname, id)
+		return fmt.Sprintf("[%s] %s", m[1], uname)
 	}
 
 	reRename := regexp.MustCompile(`^\[rename\] (.+?) \(([0-9a-fA-F]{6})\) -> (.+)$`)
@@ -42,7 +43,7 @@ func colorizeLine(s string) string {
 		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + id)).Bold(true)
 		oldN := nameStyle.Render(m[1])
 		newN := nameStyle.Render(m[3])
-		return fmt.Sprintf("[rename] %s (%s) -> %s", oldN, id, newN)
+		return fmt.Sprintf("[rename] %s -> %s", oldN, newN)
 	}
 
 	reWelcome := regexp.MustCompile(`^Welcome (.+?) \(([0-9a-fA-F]{6})\)$`)
@@ -50,7 +51,7 @@ func colorizeLine(s string) string {
 		id := strings.ToLower(m[2])
 		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + id)).Bold(true)
 		uname := nameStyle.Render(m[1])
-		return fmt.Sprintf("Welcome %s (%s)", uname, id)
+		return fmt.Sprintf("Welcome %s", uname)
 	}
 
 	return s
@@ -93,6 +94,9 @@ func initialModel(serverAddr string) model {
 }
 
 func (m model) Init() tea.Cmd {
+	if m.conn != nil {
+		return tea.Batch(textarea.Blink, readLineCmd(m.conn))
+	}
 	return tea.Batch(textarea.Blink, connectCmd(m.server))
 }
 
@@ -248,7 +252,31 @@ func main() {
 
 	time.Sleep(200 * time.Millisecond)
 
-	p := tea.NewProgram(initialModel(host), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Pre-connect and read initial welcome/instruction before starting UI
+	var preConn net.Conn
+	var preMsgs []string
+	if conn, err := net.DialTimeout("tcp", host, 3*time.Second); err == nil {
+		preConn = conn
+		// Read up to two initial lines with a short deadline
+		_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		r := bufio.NewReader(conn)
+		for i := 0; i < 2; i++ {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				break
+			}
+			preMsgs = append(preMsgs, strings.TrimRight(line, "\r\n"))
+		}
+		_ = conn.SetReadDeadline(time.Time{})
+	}
+
+	m := initialModel(host)
+	if preConn != nil {
+		m.conn = preConn
+		m.messages = append(m.messages, preMsgs...)
+	}
+
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("Error:", err)
 	}
