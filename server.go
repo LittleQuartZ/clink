@@ -102,14 +102,14 @@ func handleConn(h *Hub, c net.Conn) {
 	h.joinCh <- c
 
 	// Generate per-connection ID
-	id, err := gonanoid.Generate("ABCDEF0123456789", 6)
+	id, err := gonanoid.Generate("abcdef0123456789", 6)
 	if err != nil || id == "" {
 		// Fallback to remote addr if generation fails
 		id = c.RemoteAddr().String()
 	}
 
 	// Default username is server-controlled; not necessarily unique
-	defaultName := "user_" + strings.ToLower(id)
+	defaultName := "user_" + id
 	username := defaultName
 
 	// Greet client and instruct on setting username
@@ -132,8 +132,7 @@ func handleConn(h *Hub, c net.Conn) {
 		if line == "/quit" {
 			break // unified leave handling below
 		}
-		if strings.HasPrefix(line, "/name ") {
-			desired := strings.TrimSpace(strings.TrimPrefix(line, "/name "))
+		if desired, ok := strings.CutPrefix(line, "/name "); ok {
 			newName := sanitizeUsername(desired)
 			if newName == "" {
 				fmt.Fprintln(c, "[error] invalid username")

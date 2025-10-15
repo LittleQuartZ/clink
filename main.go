@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,45 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// colorizeLine applies ANSI styling to usernames based on 6-hex-digit id from the server.
+func colorizeLine(s string) string {
+	reChat := regexp.MustCompile(`^(.+?) \(([0-9a-fA-F]{6})\):[ \t]*(.*)$`)
+	if m := reChat.FindStringSubmatch(s); m != nil {
+		id := strings.ToLower(m[2])
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + id)).Bold(true)
+		name := nameStyle.Render(m[1])
+		rest := strings.TrimSpace(m[3])
+		return fmt.Sprintf("%s (%s): %s", name, id, rest)
+	}
+
+	reJoinLeave := regexp.MustCompile(`^\[(join|leave)\] (.+?) \(([0-9a-fA-F]{6})\)$`)
+	if m := reJoinLeave.FindStringSubmatch(s); m != nil {
+		id := strings.ToLower(m[3])
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + id)).Bold(true)
+		uname := nameStyle.Render(m[2])
+		return fmt.Sprintf("[%s] %s (%s)", m[1], uname, id)
+	}
+
+	reRename := regexp.MustCompile(`^\[rename\] (.+?) \(([0-9a-fA-F]{6})\) -> (.+)$`)
+	if m := reRename.FindStringSubmatch(s); m != nil {
+		id := strings.ToLower(m[2])
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + id)).Bold(true)
+		oldN := nameStyle.Render(m[1])
+		newN := nameStyle.Render(m[3])
+		return fmt.Sprintf("[rename] %s (%s) -> %s", oldN, id, newN)
+	}
+
+	reWelcome := regexp.MustCompile(`^Welcome (.+?) \(([0-9a-fA-F]{6})\)$`)
+	if m := reWelcome.FindStringSubmatch(s); m != nil {
+		id := strings.ToLower(m[2])
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + id)).Bold(true)
+		uname := nameStyle.Render(m[1])
+		return fmt.Sprintf("Welcome %s (%s)", uname, id)
+	}
+
+	return s
+}
 
 type netMsg string
 type connectedMsg struct{ conn net.Conn }
@@ -122,7 +162,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case netMsg:
-		m.messages = append(m.messages, string(msg))
+		m.messages = append(m.messages, colorizeLine(string(msg)))
 		m.refreshViewport()
 
 		if m.conn != nil && !strings.HasPrefix(string(msg), "[error] read") {
