@@ -212,6 +212,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.err = nil
+			if len(m.menu) > 0 {
+				m.form = m.buildForm()
+				return m, m.form.Init()
+			}
 			m.loading = true
 			m.status = "Loading menu..."
 			return m, fetchMenuCmd(m.conn)
