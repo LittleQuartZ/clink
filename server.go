@@ -13,17 +13,10 @@ import (
 	gonanoid "github.com/matoous/go-nanoid/v2"
 )
 
-// menuItem is the structure returned to clients for MENU.
-type menuItem struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-// defaultMenu is a simple, static menu. Replace or make dynamic as needed.
 var defaultMenu = []menuItem{
-	{ID: "latte", Name: "Caffè Latte"},
-	{ID: "cap", Name: "Cappuccino"},
-	{ID: "esp", Name: "Espresso"},
+	{ID: "latte", Name: "Caffè Latte", Price: 4.50},
+	{ID: "cap", Name: "Cappuccino", Price: 4.00},
+	{ID: "esp", Name: "Espresso", Price: 3.00},
 }
 
 // order is the structure the server expects for ORDER.
@@ -209,13 +202,13 @@ func handleConn(h *Hub, c net.Conn) {
 				continue
 			}
 
-			// Optional: broadcast to chat listeners for visibility
+			total := float64(ord.Quantity) * chosen.Price
+
 			h.msgCh <- broadcast{
-				text: fmt.Sprintf("[order] %s (%s) ordered %d × %s", username, id, ord.Quantity, chosen.Name),
+				text: fmt.Sprintf("[order] %s (%s) ordered %d × %s ($%.2f)", username, id, ord.Quantity, chosen.Name, total),
 			}
 
-			// Acknowledge to the ordering client
-			fmt.Fprintln(c, "OK")
+			fmt.Fprintf(c, "OK|%.2f\n", total)
 			continue
 		}
 

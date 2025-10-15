@@ -17,8 +17,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// menuItem represents one option in the server-provided menu.
-// Expected JSON (one line): [{"id":"latte","name":"Caffè Latte"}, ...]
+type menuItem struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Price float64 `json:"price"`
+}
 
 // order represents the payload we submit back to the server.
 
@@ -30,10 +33,12 @@ type (
 		err   error
 	}
 	orderSubmittedMsg struct {
-		ack string
-		err error
+		ack   string
+		total float64
+		err   error
 	}
-	statusMsg string
+	broadcastMsg string
+	statusMsg    string
 )
 
 type FormFields struct {
@@ -45,18 +50,16 @@ type FormFields struct {
 
 // model holds the TUI state.
 type model struct {
-	// connection
 	host string
 	conn net.Conn
 
-	// UI
-	title     string
-	status    string
-	loading   bool
-	err       error
-	lastOrder *order
+	title      string
+	status     string
+	loading    bool
+	err        error
+	lastOrder  *order
+	broadcasts []string
 
-	// form
 	form        *huh.Form
 	formFields  *FormFields
 	menu        []menuItem
@@ -64,6 +67,9 @@ type model struct {
 	itemID      string
 	quantityStr string
 	confirm     bool
+
+	width  int
+	height int
 }
 
 // initialModel creates a base model.
@@ -136,7 +142,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connectedMsg:
 		m.conn = msg.conn
 		m.status = fmt.Sprintf("Connected to %s", m.host)
-		return m, nil
+		return m, listenForBroadcastsCmd(m.conn)
 
 	case menuLoadedMsg:
 		m.loading = false
@@ -160,12 +166,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = nil
-		if msg.ack != "" {
+		if msg.total > 0 {
+			m.status = fmt.Sprintf("Order submitted. Total: $%.2f", msg.total)
+		} else if msg.ack != "" {
 			m.status = fmt.Sprintf("Order submitted. Server says: %s", msg.ack)
-		} else {
-			m.status = "Order submitted."
 		}
 		return m, nil
+
+	case broadcastMsg:
+		msgText := string(msg)
+		if strings.HasPrefix(msgText, "[order]") {
+			m.broadcasts = append(m.broadcasts, msgText)
+			if len(m.broadcasts) > 10 {
+				m.broadcasts = m.broadcasts[1:]
+			}
+		}
+		return m, listenForBroadcastsCmd(m.conn)
 
 	case statusMsg:
 		m.status = string(msg)
@@ -202,28 +218,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
-		// No dynamic layout needed, handled in View.
+		m.width = msg.Width
+		m.height = msg.Height
 	}
 
 	return m, nil
 }
 
-func (m model) View() string {
-	// Basic centered title and instructions
-	w := lipgloss.NewStyle().Width(80)
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Render(m.title)
-	host := lipgloss.NewStyle().Faint(true).Render(m.host)
+func (m model) renderHeader() string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	hostStyle := lipgloss.NewStyle().Faint(true)
 
-	lines := []string{
-		w.Align(lipgloss.Center).Render(title),
-		w.Align(lipgloss.Center).Render(host),
-		"",
-		"Controls:",
-		"- n: New order",
-		"- r: Reconnect",
-		"- q: Quit",
-		"",
-	}
+	title := titleStyle.Render(m.title)
+	host := hostStyle.Render(m.host)
+
+	header := lipgloss.JoinVertical(lipgloss.Center, title, host)
+	return lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(header)
+}
+
+func (m model) renderLeftColumn() string {
+	lines := []string{}
 
 	if m.loading {
 		lines = append(lines, "Status: "+lipgloss.NewStyle().Foreground(lipgloss.Color("178")).Render("Loading..."))
@@ -236,9 +250,8 @@ func (m model) View() string {
 	}
 
 	if m.lastOrder != nil {
-		lines = append(lines, "", "Last order:")
-		lines = append(lines, fmt.Sprintf("- Name: %s", m.lastOrder.Name))
-		// Map selected item label for display
+		lines = append(lines, "", lipgloss.NewStyle().Bold(true).Render("Last Order:"))
+		lines = append(lines, fmt.Sprintf("  Name: %s", m.lastOrder.Name))
 		var label string
 		for _, it := range m.menu {
 			if it.ID == m.lastOrder.ItemID {
@@ -247,27 +260,128 @@ func (m model) View() string {
 			}
 		}
 		if label != "" {
-			lines = append(lines, fmt.Sprintf("- Item: %s (%s)", label, m.lastOrder.ItemID))
+			lines = append(lines, fmt.Sprintf("  Item: %s", label))
 		} else {
-			lines = append(lines, fmt.Sprintf("- Item: %s", m.lastOrder.ItemID))
+			lines = append(lines, fmt.Sprintf("  Item: %s", m.lastOrder.ItemID))
 		}
-		lines = append(lines, fmt.Sprintf("- Quantity: %d", m.lastOrder.Quantity))
+		lines = append(lines, fmt.Sprintf("  Quantity: %d", m.lastOrder.Quantity))
 	}
 
+	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return lipgloss.NewStyle().
+		Width(m.width/2 - 2).
+		Height(m.height - 6).
+		Padding(1).
+		Render(content)
+}
+
+func (m model) renderRightColumn() string {
+	lines := []string{}
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	lines = append(lines, headerStyle.Render("Recent Orders:"))
+	lines = append(lines, "")
+
+	if len(m.broadcasts) == 0 {
+		lines = append(lines, lipgloss.NewStyle().Faint(true).Render("No orders yet..."))
+	} else {
+		bulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
+		itemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
+		priceStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+
+		for _, b := range m.broadcasts {
+			msg := strings.TrimPrefix(b, "[order] ")
+			parts := strings.SplitN(msg, " ordered ", 2)
+			if len(parts) == 2 {
+				customer := parts[0]
+				orderDetails := parts[1]
+
+				line := fmt.Sprintf("%s %s ordered %s",
+					bulletStyle.Render("•"),
+					nameStyle.Render(customer),
+					itemStyle.Render(orderDetails))
+
+				if idx := strings.Index(orderDetails, "($"); idx != -1 {
+					priceStart := idx
+					priceEnd := strings.Index(orderDetails[priceStart:], ")")
+					if priceEnd != -1 {
+						priceEnd += priceStart + 1
+						beforePrice := orderDetails[:priceStart]
+						priceText := orderDetails[priceStart:priceEnd]
+
+						line = fmt.Sprintf("%s %s ordered %s %s",
+							bulletStyle.Render("•"),
+							nameStyle.Render(customer),
+							itemStyle.Render(beforePrice),
+							priceStyle.Render(priceText))
+					}
+				}
+
+				lines = append(lines, line)
+			}
+		}
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return lipgloss.NewStyle().
+		Width(m.width/2 - 2).
+		Height(m.height - 6).
+		Padding(1).
+		Render(content)
+}
+
+func (m model) renderFooter() string {
+	connStatus := ""
+	if m.conn != nil {
+		connStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("● Connected")
+	} else {
+		connStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("● Disconnected")
+	}
+
+	controls := lipgloss.NewStyle().Faint(true).Render("n: New Order  r: Reconnect  q: Quit")
+
+	leftSide := connStatus
+	rightSide := controls
+
+	footer := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(m.width/2).Render(leftSide),
+		lipgloss.NewStyle().Width(m.width/2).Align(lipgloss.Right).Render(rightSide),
+	)
+
+	return lipgloss.NewStyle().Width(m.width).Render(footer)
+}
+
+func (m model) View() string {
 	if m.form != nil {
-		// When the form is active, render only the form (full screen)
 		return m.form.View()
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	if m.width == 0 || m.height == 0 {
+		return "Loading..."
+	}
+
+	header := m.renderHeader()
+
+	leftCol := m.renderLeftColumn()
+	rightCol := m.renderRightColumn()
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
+
+	footer := m.renderFooter()
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		"",
+		body,
+		"",
+		footer,
+	)
 }
 
 // buildForm constructs the order form: Input (name) -> Select (menu) -> Input (qty) -> Confirm.
 func (m *model) buildForm() *huh.Form {
-	// Convert menu to huh options
 	opts := make([]huh.Option[string], 0, len(m.menu))
 	for _, it := range m.menu {
-		opts = append(opts, huh.NewOption(it.Name, it.ID))
+		opts = append(opts, huh.NewOption(fmt.Sprintf("%s - $%.2f", it.Name, it.Price), it.ID))
 	}
 
 	// Reset bound fields for a fresh form
@@ -406,7 +520,30 @@ func submitOrderCmd(conn net.Conn, ord order) tea.Cmd {
 		if err != nil {
 			return orderSubmittedMsg{err: fmt.Errorf("read ORDER ack: %w", err)}
 		}
-		return orderSubmittedMsg{ack: strings.TrimRight(line, "\r\n")}
+		line = strings.TrimRight(line, "\r\n")
+		parts := strings.Split(line, "|")
+		ack := parts[0]
+		var total float64
+		if len(parts) > 1 {
+			if t, err := strconv.ParseFloat(parts[1], 64); err == nil {
+				total = t
+			}
+		}
+		return orderSubmittedMsg{ack: ack, total: total}
+	}
+}
+
+func listenForBroadcastsCmd(conn net.Conn) tea.Cmd {
+	return func() tea.Msg {
+		if conn == nil {
+			return nil
+		}
+		r := bufio.NewReader(conn)
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return statusMsg(fmt.Sprintf("Connection closed: %v", err))
+		}
+		return broadcastMsg(strings.TrimRight(line, "\r\n"))
 	}
 }
 
