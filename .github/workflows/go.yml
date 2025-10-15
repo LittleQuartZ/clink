@@ -79,13 +79,11 @@ jobs:
             rm -f "$BIN"
           fi
 
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-${{ steps.ver.outputs.version }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
+          name: binaries-${{ github.run_id }}-${{ github.sha }}
+          path: ./path/to/artifact
 
   release:
     needs: build
