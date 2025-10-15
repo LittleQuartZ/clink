@@ -70,6 +70,9 @@ type model struct {
 
 	width  int
 	height int
+
+	reader             *bufio.Reader
+	broadcastListening bool
 }
 
 // initialModel creates a base model.
@@ -123,7 +126,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.err = nil
 				m.loading = true
 				m.status = "Submitting order..."
-				return m, submitOrderCmd(m.conn, *ord)
+				return m, submitOrderCmd(m.conn, *ord, m.reader)
 			}
 			m.status = "Order canceled."
 			return m, cmd
@@ -141,8 +144,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case connectedMsg:
 		m.conn = msg.conn
+		m.reader = bufio.NewReader(m.conn)
 		m.status = fmt.Sprintf("Connected to %s", m.host)
-		return m, listenForBroadcastsCmd(m.conn)
+
+		_ = m.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		for i := 0; i < 2; i++ {
+			if _, err := m.reader.ReadString('\n'); err != nil {
+				break
+			}
+		}
+		_ = m.conn.SetReadDeadline(time.Time{})
+
+		return m, nil
 
 	case menuLoadedMsg:
 		m.loading = false
@@ -154,9 +167,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.menu = msg.items
 		m.status = "Menu loaded."
-		// Open the form now that we have a menu.
+
+		var cmds []tea.Cmd
 		m.form = m.buildForm()
-		return m, m.form.Init()
+		cmds = append(cmds, m.form.Init())
+
+		if !m.broadcastListening {
+			m.broadcastListening = true
+			cmds = append(cmds, listenForBroadcastsCmd(m.conn, m.reader))
+		}
+
+		return m, tea.Batch(cmds...)
 
 	case orderSubmittedMsg:
 		m.loading = false
@@ -181,7 +202,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.broadcasts = m.broadcasts[1:]
 			}
 		}
-		return m, listenForBroadcastsCmd(m.conn)
+		return m, listenForBroadcastsCmd(m.conn, m.reader)
 
 	case statusMsg:
 		m.status = string(msg)
@@ -203,7 +224,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Reconnecting..."
 			return m, connectCmd(m.host)
 		case "n":
-			// Start a new order
 			if m.loading || m.form != nil {
 				return m, nil
 			}
@@ -218,7 +238,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.loading = true
 			m.status = "Loading menu..."
-			return m, fetchMenuCmd(m.conn)
+			return m, fetchMenuCmd(m.conn, m.reader)
 		}
 
 	case tea.WindowSizeMsg:
@@ -447,15 +467,6 @@ func connectCmd(addr string) tea.Cmd {
 		if err != nil {
 			return statusMsg(fmt.Sprintf("Connect failed: %v", err))
 		}
-		// Try to read up to two greeting lines with short deadline (optional).
-		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		br := bufio.NewReader(conn)
-		for i := 0; i < 2; i++ {
-			if _, err := br.ReadString('\n'); err != nil {
-				break
-			}
-		}
-		_ = conn.SetReadDeadline(time.Time{})
 
 		return connectedMsg{conn: conn}
 	}
@@ -465,27 +476,24 @@ func connectCmd(addr string) tea.Cmd {
 // Protocol (proposed):
 // - client: "MENU\n"
 // - server: single line JSON array: [{"id":"x","name":"..."}]\n
-func fetchMenuCmd(conn net.Conn) tea.Cmd {
+func fetchMenuCmd(conn net.Conn, reader *bufio.Reader) tea.Cmd {
 	return func() tea.Msg {
 		if conn == nil {
 			return menuLoadedMsg{err: errors.New("not connected")}
 		}
 
-		// Send request
 		if _, err := fmt.Fprintln(conn, "MENU"); err != nil {
 			return menuLoadedMsg{err: fmt.Errorf("send MENU: %w", err)}
 		}
 
-		// Read single JSON line
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
-		r := bufio.NewReader(conn)
-		line, err := r.ReadString('\n')
+
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			return menuLoadedMsg{err: fmt.Errorf("read MENU: %w", err)}
 		}
 		line = strings.TrimRight(line, "\r\n")
-		// If the server sent an error-ish line, surface it.
 		if strings.HasPrefix(line, "[error]") {
 			return menuLoadedMsg{err: fmt.Errorf("server: %s", line)}
 		}
@@ -502,7 +510,7 @@ func fetchMenuCmd(conn net.Conn) tea.Cmd {
 // Protocol (proposed):
 // - client: "ORDER <json>\n"
 // - server: a single line acknowledgement (freeform), e.g. "OK\n"
-func submitOrderCmd(conn net.Conn, ord order) tea.Cmd {
+func submitOrderCmd(conn net.Conn, ord order, reader *bufio.Reader) tea.Cmd {
 	return func() tea.Msg {
 		if conn == nil {
 			return orderSubmittedMsg{err: errors.New("not connected")}
@@ -516,11 +524,10 @@ func submitOrderCmd(conn net.Conn, ord order) tea.Cmd {
 			return orderSubmittedMsg{err: fmt.Errorf("send ORDER: %w", err)}
 		}
 
-		// Read single-line ack
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
-		r := bufio.NewReader(conn)
-		line, err := r.ReadString('\n')
+
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			return orderSubmittedMsg{err: fmt.Errorf("read ORDER ack: %w", err)}
 		}
@@ -537,13 +544,12 @@ func submitOrderCmd(conn net.Conn, ord order) tea.Cmd {
 	}
 }
 
-func listenForBroadcastsCmd(conn net.Conn) tea.Cmd {
+func listenForBroadcastsCmd(conn net.Conn, reader *bufio.Reader) tea.Cmd {
 	return func() tea.Msg {
-		if conn == nil {
+		if conn == nil || reader == nil {
 			return nil
 		}
-		r := bufio.NewReader(conn)
-		line, err := r.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			return statusMsg(fmt.Sprintf("Connection closed: %v", err))
 		}
