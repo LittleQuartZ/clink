@@ -74,6 +74,7 @@ type model struct {
 
 	reader             *bufio.Reader
 	broadcastListening bool
+	pauseBroadcast     bool
 }
 
 // initialModel creates a base model.
@@ -126,6 +127,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.err = nil
 				m.loading = true
+				m.pauseBroadcast = true
 				m.status = "Submitting order..."
 				return m, submitOrderCmd(m.conn, *ord, m.reader)
 			}
@@ -169,62 +171,60 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menu = msg.items
 		m.status = "Menu loaded."
 
-		var cmds []tea.Cmd
 		m.form = m.buildForm()
-		cmds = append(cmds, m.form.Init())
-
-		if !m.broadcastListening {
-			m.broadcastListening = true
-			cmds = append(cmds, listenForBroadcastsCmd(m.conn, m.reader))
-		}
-
-		return m, tea.Batch(cmds...)
+		return m, m.form.Init()
 
 	case orderSubmittedMsg:
 		m.loading = false
+		m.pauseBroadcast = false
 		if msg.err != nil {
 			m.err = msg.err
 			m.status = "Order submission failed."
+			if m.broadcastListening {
+				return m, listenForBroadcastsCmd(m.conn, m.reader)
+			}
 			return m, nil
 		}
 		m.err = nil
 		if msg.total > 0 {
 			m.status = fmt.Sprintf("Order submitted. Total: $%.2f", msg.total)
 
-			if m.lastOrder != nil {
-				var itemName string
-				for _, it := range m.menu {
-					if it.ID == m.lastOrder.ItemID {
-						itemName = it.Name
-						break
-					}
-				}
-				if itemName != "" {
-					broadcastText := fmt.Sprintf("[order] %s ordered %d × %s ($%.2f)",
-						m.lastOrder.Name, m.lastOrder.Quantity, itemName, msg.total)
-					m.broadcasts = append(m.broadcasts, broadcastText)
-					if len(m.broadcasts) > 10 {
-						m.broadcasts = m.broadcasts[1:]
-					}
-				}
+			if !m.broadcastListening {
+				m.broadcastListening = true
+				return m, listenForBroadcastsCmd(m.conn, m.reader)
 			}
+			return m, listenForBroadcastsCmd(m.conn, m.reader)
 		} else if msg.ack != "" {
 			m.status = fmt.Sprintf("Order submitted. Server says: %s", msg.ack)
+		}
+		if m.broadcastListening {
+			return m, listenForBroadcastsCmd(m.conn, m.reader)
 		}
 		return m, nil
 
 	case broadcastMsg:
 		msgText := string(msg)
-		if strings.HasPrefix(msgText, "[order]") {
+		if msgText != "" && strings.HasPrefix(msgText, "[order]") {
 			m.broadcasts = append(m.broadcasts, msgText)
 			if len(m.broadcasts) > 10 {
 				m.broadcasts = m.broadcasts[1:]
 			}
 		}
+		if m.pauseBroadcast {
+			time.Sleep(50 * time.Millisecond)
+		}
 		return m, listenForBroadcastsCmd(m.conn, m.reader)
-
 	case statusMsg:
-		m.status = string(msg)
+		msgStr := string(msg)
+		m.status = msgStr
+		if strings.Contains(msgStr, "Connection closed") {
+			if m.conn != nil {
+				_ = m.conn.Close()
+				m.conn = nil
+			}
+			m.broadcastListening = false
+			m.reader = nil
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -240,6 +240,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.conn.Close()
 				m.conn = nil
 			}
+			m.broadcastListening = false
+			m.reader = nil
 			m.status = "Reconnecting..."
 			return m, connectCmd(m.host)
 		case "n":
@@ -497,7 +499,7 @@ func connectCmd(addr string) tea.Cmd {
 // - server: single line JSON array: [{"id":"x","name":"..."}]\n
 func fetchMenuCmd(conn net.Conn, reader *bufio.Reader) tea.Cmd {
 	return func() tea.Msg {
-		if conn == nil {
+		if conn == nil || reader == nil {
 			return menuLoadedMsg{err: errors.New("not connected")}
 		}
 
@@ -531,7 +533,7 @@ func fetchMenuCmd(conn net.Conn, reader *bufio.Reader) tea.Cmd {
 // - server: a single line acknowledgement (freeform), e.g. "OK\n"
 func submitOrderCmd(conn net.Conn, ord order, reader *bufio.Reader) tea.Cmd {
 	return func() tea.Msg {
-		if conn == nil {
+		if conn == nil || reader == nil {
 			return orderSubmittedMsg{err: errors.New("not connected")}
 		}
 		b, err := json.Marshal(ord)
@@ -543,7 +545,9 @@ func submitOrderCmd(conn net.Conn, ord order, reader *bufio.Reader) tea.Cmd {
 			return orderSubmittedMsg{err: fmt.Errorf("send ORDER: %w", err)}
 		}
 
-		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		time.Sleep(150 * time.Millisecond)
+
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
 		line, err := reader.ReadString('\n')
@@ -565,11 +569,23 @@ func submitOrderCmd(conn net.Conn, ord order, reader *bufio.Reader) tea.Cmd {
 
 func listenForBroadcastsCmd(conn net.Conn, reader *bufio.Reader) tea.Cmd {
 	return func() tea.Msg {
+		defer func() {
+			if r := recover(); r != nil {
+				return
+			}
+		}()
 		if conn == nil || reader == nil {
 			return nil
 		}
+
+		_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 		line, err := reader.ReadString('\n')
+		_ = conn.SetReadDeadline(time.Time{})
+
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				return broadcastMsg("")
+			}
 			return statusMsg(fmt.Sprintf("Connection closed: %v", err))
 		}
 		return broadcastMsg(strings.TrimRight(line, "\r\n"))

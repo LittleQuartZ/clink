@@ -205,7 +205,7 @@ func handleConn(h *Hub, c net.Conn) {
 			total := float64(ord.Quantity) * chosen.Price
 
 			h.msgCh <- broadcast{
-				text: fmt.Sprintf("[order] %s (%s) ordered %d × %s ($%.2f)", username, id, ord.Quantity, chosen.Name, total),
+				text: fmt.Sprintf("[order] %s ordered %d × %s ($%.2f)", ord.Name, ord.Quantity, chosen.Name, total),
 			}
 
 			fmt.Fprintf(c, "OK|%.2f\n", total)
