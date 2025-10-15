@@ -1,0 +1,69 @@
+name: build-binaries
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+        include:
+          - goos: linux
+            goarch: arm
+            goarm: "7"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Build
+        run: |
+          APP_NAME=myapp
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          OUT="dist/${APP_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}${EXT}"
+          mkdir -p dist
+          export CGO_ENABLED=0
+          if [ "${{ matrix.goarm }}" != "" ]; then export GOARM=${{ matrix.goarm }}; fi
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags="-s -w" -o "$OUT" ./cmd/myapp
+          # tar/zip per OS
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -j "${OUT%.exe}.zip" "$OUT"
+            rm -f "$OUT"
+          else
+            tar -C dist -czf "${OUT##dist/}.tar.gz" "$(basename "$OUT")"
+            rm -f "$OUT"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
