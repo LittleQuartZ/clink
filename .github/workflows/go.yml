@@ -21,10 +21,6 @@ jobs:
       matrix:
         goos: [linux, darwin, windows]
         goarch: [amd64, arm64]
-        include:
-          - goos: linux
-            goarch: arm
-            goarm: "7"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,30 +66,8 @@ jobs:
             go build -trimpath -ldflags="-s -w -X 'main.version=${V}'" \
             -o "$BIN" "$ENTRY_PATH"
 
-          # package into OS-appropriate archive
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip -j "dist/${ARCHIVE_BASE}.zip" "$BIN"
-            rm -f "$BIN"
-          else
-            tar -C dist -czf "dist/${ARCHIVE_BASE}.tar.gz" "$(basename "$BIN")"
-            rm -f "$BIN"
-          fi
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries-${{ github.run_id }}-${{ github.sha }}
-          path: ./path/to/artifact
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries-${{ needs.build.outputs.version }}
-          path: dist
+          echo "Built and packaged: dist/"
+          echo "$(ls -lh "dist")"
 
       - name: Create GitHub Release with binaries
         uses: softprops/action-gh-release@v2
