@@ -2,14 +2,36 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 
 	gonanoid "github.com/matoous/go-nanoid/v2"
 )
+
+// menuItem is the structure returned to clients for MENU.
+type menuItem struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// defaultMenu is a simple, static menu. Replace or make dynamic as needed.
+var defaultMenu = []menuItem{
+	{ID: "latte", Name: "Caffè Latte"},
+	{ID: "cap", Name: "Cappuccino"},
+	{ID: "esp", Name: "Espresso"},
+}
+
+// order is the structure the server expects for ORDER.
+type order struct {
+	Name     string `json:"name"`
+	ItemID   string `json:"itemId"`
+	Quantity int    `json:"quantity"`
+}
 
 // broadcast represents a line to send to all connections with the ability
 // to exclude a single connection (e.g., exclude self on join).
@@ -129,7 +151,75 @@ func handleConn(h *Hub, c net.Conn) {
 			continue
 		}
 
-		// Commands
+		// New protocol commands:
+		// MENU -> server returns single-line JSON array of menuItem
+		if strings.EqualFold(line, "MENU") {
+			b, err := json.Marshal(defaultMenu)
+			if err != nil {
+				fmt.Fprintln(c, `[error] failed to encode menu`)
+				continue
+			}
+			fmt.Fprintln(c, string(b))
+			continue
+		}
+
+		// ORDER <json> -> server validates and replies with a single-line ack
+		if strings.HasPrefix(line, "ORDER") {
+			raw := strings.TrimSpace(line[len("ORDER"):])
+			var ord order
+			if err := json.Unmarshal([]byte(raw), &ord); err != nil {
+				fmt.Fprintln(c, "[error] invalid order json")
+				continue
+			}
+			ord.Name = strings.TrimSpace(ord.Name)
+			log.Printf("ORDER parsed: name=%q itemId=%q qty=%d", ord.Name, ord.ItemID, ord.Quantity)
+			if ord.Name == "" {
+				fmt.Fprintln(c, "[error] missing name")
+				continue
+			}
+			// Fallback handling: accept numeric strings or floats for quantity
+			if ord.Quantity <= 0 {
+				var generic map[string]any
+				if err := json.Unmarshal([]byte(raw), &generic); err == nil {
+					if v, ok := generic["quantity"]; ok {
+						switch t := v.(type) {
+						case string:
+							if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil {
+								ord.Quantity = n
+							}
+						case float64:
+							ord.Quantity = int(t)
+						}
+					}
+				}
+			}
+			if ord.Quantity <= 0 {
+				fmt.Fprintln(c, "[error] invalid quantity")
+				continue
+			}
+			var chosen *menuItem
+			for i := range defaultMenu {
+				if defaultMenu[i].ID == ord.ItemID {
+					chosen = &defaultMenu[i]
+					break
+				}
+			}
+			if chosen == nil {
+				fmt.Fprintln(c, "[error] unknown item")
+				continue
+			}
+
+			// Optional: broadcast to chat listeners for visibility
+			h.msgCh <- broadcast{
+				text: fmt.Sprintf("[order] %s (%s) ordered %d × %s", username, id, ord.Quantity, chosen.Name),
+			}
+
+			// Acknowledge to the ordering client
+			fmt.Fprintln(c, "OK")
+			continue
+		}
+
+		// Chat commands
 		if line == "/quit" {
 			break // unified leave handling below
 		}
