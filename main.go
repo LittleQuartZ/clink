@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -179,7 +180,7 @@ func (m *model) refreshViewport() {
 }
 
 func (m model) View() string {
-	header := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Bold(true).Render(m.server)
+	header := lipgloss.NewStyle().Width(m.vp.Width).Padding(0, 1).Align(lipgloss.Center).Foreground(lipgloss.Color("241")).Bold(true).Render(m.server)
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
@@ -189,15 +190,25 @@ func (m model) View() string {
 }
 
 func main() {
-	go func() {
-		if err := startTCPServer("localhost:9000"); err != nil {
+	var (
+		host       string
+		serverOnly bool
+	)
+
+	flag.StringVar(&host, "host", "localhost:9000", "host:port to connect to or bind the server on")
+	flag.BoolVar(&serverOnly, "server", false, "run only the server")
+	flag.Parse()
+
+	if serverOnly {
+		if err := startTCPServer(host); err != nil {
 			fmt.Println("Server error:", err)
 		}
-	}()
+		return
+	}
 
 	time.Sleep(200 * time.Millisecond)
 
-	p := tea.NewProgram(initialModel("127.0.0.1:9000"), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(initialModel(host), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("Error:", err)
 	}
