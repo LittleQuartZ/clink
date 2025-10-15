@@ -10,7 +10,7 @@ permissions:
 
 env:
   APP_NAME: clink
-  ENTRY_PATH: ./main.go
+  ENTRY_PATH: .
 
 jobs:
   build:
@@ -36,7 +36,7 @@ jobs:
         run: |
           REF="${GITHUB_REF_NAME}"     # e.g., releases/v1.2.3
           case "$REF" in
-            releases/v*) ;; 
+            releases/v*) ;;
             *) echo "Unexpected ref: $REF" >&2; exit 1;;
           esac
           V="${REF#releases/}"
