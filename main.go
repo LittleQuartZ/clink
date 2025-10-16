@@ -527,11 +527,20 @@ func fetchMenuCmd(conn net.Conn, reader *bufio.Reader) tea.Cmd {
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return menuLoadedMsg{err: fmt.Errorf("read MENU: %w", err)}
+		var line string
+		for {
+			l, err := reader.ReadString('\n')
+			if err != nil {
+				return menuLoadedMsg{err: fmt.Errorf("read MENU: %w", err)}
+			}
+			l = strings.TrimRight(l, "\r\n")
+			if strings.HasPrefix(l, "[join]") || strings.HasPrefix(l, "[leave]") || strings.HasPrefix(l, "[rename]") || strings.HasPrefix(l, "[order]") {
+				continue
+			}
+			line = l
+			break
 		}
-		line = strings.TrimRight(line, "\r\n")
+
 		if strings.HasPrefix(line, "[error]") {
 			return menuLoadedMsg{err: fmt.Errorf("server: %s", line)}
 		}
@@ -567,11 +576,20 @@ func submitOrderCmd(conn net.Conn, ord order, reader *bufio.Reader) tea.Cmd {
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return orderSubmittedMsg{err: fmt.Errorf("read ORDER ack: %w", err)}
+		var line string
+		for {
+			l, err := reader.ReadString('\n')
+			if err != nil {
+				return orderSubmittedMsg{err: fmt.Errorf("read ORDER ack: %w", err)}
+			}
+			l = strings.TrimRight(l, "\r\n")
+			if strings.HasPrefix(l, "[join]") || strings.HasPrefix(l, "[leave]") || strings.HasPrefix(l, "[rename]") || strings.HasPrefix(l, "[order]") {
+				continue
+			}
+			line = l
+			break
 		}
-		line = strings.TrimRight(line, "\r\n")
+
 		parts := strings.Split(line, "|")
 		ack := parts[0]
 		var total float64
