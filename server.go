@@ -19,6 +19,8 @@ var defaultMenu = []menuItem{
 	{ID: "esp", Name: "Espresso", Price: 3.00},
 }
 
+var serverMenu []menuItem
+
 // order is the structure the server expects for ORDER.
 type order struct {
 	Name     string `json:"name"`
@@ -147,7 +149,7 @@ func handleConn(h *Hub, c net.Conn) {
 		// New protocol commands:
 		// MENU -> server returns single-line JSON array of menuItem
 		if strings.EqualFold(line, "MENU") {
-			b, err := json.Marshal(defaultMenu)
+			b, err := json.Marshal(serverMenu)
 			if err != nil {
 				fmt.Fprintln(c, `[error] failed to encode menu`)
 				continue
@@ -191,9 +193,9 @@ func handleConn(h *Hub, c net.Conn) {
 				continue
 			}
 			var chosen *menuItem
-			for i := range defaultMenu {
-				if defaultMenu[i].ID == ord.ItemID {
-					chosen = &defaultMenu[i]
+			for i := range serverMenu {
+				if serverMenu[i].ID == ord.ItemID {
+					chosen = &serverMenu[i]
 					break
 				}
 			}
@@ -248,12 +250,18 @@ func handleConn(h *Hub, c net.Conn) {
 }
 
 // startTCPServer starts a TCP chat server and never returns unless an error occurs.
-func startTCPServer(addr string) error {
+func startTCPServer(addr string, menu []menuItem) error {
+	if len(menu) == 0 {
+		menu = defaultMenu
+	}
+	serverMenu = menu
+
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	log.Printf("TCP chat server listening on %s", ln.Addr())
+	log.Printf("Menu items: %d", len(serverMenu))
 
 	hub := NewHub()
 	go hub.Run()

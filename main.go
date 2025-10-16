@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -427,7 +426,7 @@ func (m model) View() string {
 
 	var leftCol string
 	if m.form != nil {
-		formView := m.form.View()
+		formView := m.form.WithHeight(m.height - 10).View()
 		leftCol = lipgloss.NewStyle().
 			Width(m.width/2 - 2).
 			Height(m.height - 6).
@@ -465,12 +464,6 @@ func (m *model) buildForm() *huh.Form {
 	m.formFields.quantityStr = ""
 	m.formFields.confirm = false
 
-	keymap := huh.NewDefaultKeyMap()
-	keymap.Quit = key.NewBinding(
-		key.WithKeys("ctrl+c", "esc"),
-		key.WithHelp("ctrl+c/esc", "quit"),
-	)
-
 	f := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
@@ -494,6 +487,8 @@ func (m *model) buildForm() *huh.Form {
 					}
 					return nil
 				}),
+		),
+		huh.NewGroup(
 			huh.NewInput().
 				Title("Quantity").
 				Prompt("> ").
@@ -512,7 +507,7 @@ func (m *model) buildForm() *huh.Form {
 				Negative("No").
 				Value(&m.formFields.confirm),
 		),
-	).WithTheme(huh.ThemeBase()).WithKeyMap(keymap)
+	).WithTheme(huh.ThemeBase())
 
 	return f
 }
@@ -652,20 +647,27 @@ func main() {
 	var (
 		host       string
 		serverOnly bool
+		menuJSON   string
 	)
 	flag.StringVar(&host, "host", "localhost:9000", "host:port to connect to or bind the server on")
 	flag.BoolVar(&serverOnly, "server", false, "run only the server")
+	flag.StringVar(&menuJSON, "menu", "", "JSON array of menu items (server mode only), e.g. '[{\"id\":\"tea\",\"name\":\"Green Tea\",\"price\":2.5}]'")
 	flag.Parse()
 
-	// If requested, start the TCP server (chat server as-is).
 	if serverOnly {
-		if err := startTCPServer(host); err != nil {
+		var menu []menuItem
+		if menuJSON != "" {
+			if err := json.Unmarshal([]byte(menuJSON), &menu); err != nil {
+				fmt.Printf("Invalid menu JSON: %v\n", err)
+				return
+			}
+		}
+		if err := startTCPServer(host, menu); err != nil {
 			fmt.Println("Server error:", err)
 		}
 		return
 	}
 
-	// Client TUI
 	m := initialModel(host)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
