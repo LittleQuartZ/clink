@@ -133,12 +133,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, submitOrderCmd(m.conn, *ord, m.reader)
 			}
 			m.status = "Order canceled."
+			if m.broadcastListening {
+				return m, listenForBroadcastsCmd(m.conn, m.reader)
+			}
 			return m, cmd
 		}
 
 		if m.form.State == huh.StateAborted {
 			m.status = "Order form aborted."
 			m.form = nil
+			if m.broadcastListening {
+				return m, listenForBroadcastsCmd(m.conn, m.reader)
+			}
 			return m, cmd
 		}
 
@@ -159,13 +165,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		_ = m.conn.SetReadDeadline(time.Time{})
 
-		return m, nil
+		m.broadcastListening = true
+		return m, listenForBroadcastsCmd(m.conn, m.reader)
 
 	case menuLoadedMsg:
 		m.loading = false
+		m.pauseBroadcast = false
 		if msg.err != nil {
 			m.err = msg.err
 			m.status = "Failed to load menu."
+			if m.broadcastListening {
+				return m, listenForBroadcastsCmd(m.conn, m.reader)
+			}
 			return m, nil
 		}
 		m.err = nil
@@ -173,6 +184,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Menu loaded."
 
 		m.form = m.buildForm()
+		if m.broadcastListening {
+			return m, tea.Batch(m.form.Init(), listenForBroadcastsCmd(m.conn, m.reader))
+		}
 		return m, m.form.Init()
 
 	case orderSubmittedMsg:
@@ -212,7 +226,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.pauseBroadcast {
-			time.Sleep(50 * time.Millisecond)
+			return m, nil
 		}
 		return m, listenForBroadcastsCmd(m.conn, m.reader)
 	case statusMsg:
@@ -259,6 +273,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.form.Init()
 			}
 			m.loading = true
+			m.pauseBroadcast = true
 			m.status = "Loading menu..."
 			return m, fetchMenuCmd(m.conn, m.reader)
 		}
@@ -286,7 +301,11 @@ func (m model) renderLeftColumn() string {
 	lines := []string{}
 
 	if m.loading {
-		lines = append(lines, "Status: "+lipgloss.NewStyle().Foreground(lipgloss.Color("178")).Render("Loading..."))
+		loadingText := "Loading..."
+		if m.status != "" {
+			loadingText = m.status
+		}
+		lines = append(lines, "Status: "+lipgloss.NewStyle().Foreground(lipgloss.Color("178")).Render(loadingText))
 	} else if m.status != "" {
 		lines = append(lines, "Status: "+m.status)
 	}
@@ -519,6 +538,8 @@ func fetchMenuCmd(conn net.Conn, reader *bufio.Reader) tea.Cmd {
 		if conn == nil || reader == nil {
 			return menuLoadedMsg{err: errors.New("not connected")}
 		}
+
+		time.Sleep(150 * time.Millisecond)
 
 		if _, err := fmt.Fprintln(conn, "MENU"); err != nil {
 			return menuLoadedMsg{err: fmt.Errorf("send MENU: %w", err)}
