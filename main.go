@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -317,6 +318,7 @@ func (m model) renderLeftColumn() string {
 		Width(m.width/2 - 2).
 		Height(m.height - 6).
 		Padding(1).
+		Border(lipgloss.RoundedBorder()).
 		Render(content)
 }
 
@@ -372,6 +374,7 @@ func (m model) renderRightColumn() string {
 		Width(m.width/2 - 2).
 		Height(m.height - 6).
 		Padding(1).
+		Border(lipgloss.RoundedBorder()).
 		Render(content)
 }
 
@@ -397,17 +400,25 @@ func (m model) renderFooter() string {
 }
 
 func (m model) View() string {
-	if m.form != nil {
-		return m.form.View()
-	}
-
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
 
 	header := m.renderHeader()
 
-	leftCol := m.renderLeftColumn()
+	var leftCol string
+	if m.form != nil {
+		formView := m.form.View()
+		leftCol = lipgloss.NewStyle().
+			Width(m.width/2 - 2).
+			Height(m.height - 6).
+			Padding(1).
+			Border(lipgloss.RoundedBorder()).
+			Render(formView)
+	} else {
+		leftCol = m.renderLeftColumn()
+	}
+
 	rightCol := m.renderRightColumn()
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
 
@@ -434,6 +445,12 @@ func (m *model) buildForm() *huh.Form {
 	m.formFields.itemID = ""
 	m.formFields.quantityStr = ""
 	m.formFields.confirm = false
+
+	keymap := huh.NewDefaultKeyMap()
+	keymap.Quit = key.NewBinding(
+		key.WithKeys("ctrl+c", "esc"),
+		key.WithHelp("ctrl+c/esc", "quit"),
+	)
 
 	f := huh.NewForm(
 		huh.NewGroup(
@@ -476,7 +493,7 @@ func (m *model) buildForm() *huh.Form {
 				Negative("No").
 				Value(&m.formFields.confirm),
 		),
-	)
+	).WithTheme(huh.ThemeBase()).WithKeyMap(keymap)
 
 	return f
 }
